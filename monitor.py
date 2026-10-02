@@ -30,28 +30,47 @@ def get_macro_indicators():
 
 def get_institutional_data():
     """心法 2：獲取外資現貨買賣超與台指期淨未平倉口數"""
+    # 加入 User-Agent 偽裝成一般瀏覽器，避免被證交所防護機制阻擋
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
     # 1. 證交所外資買賣超 (三大法人買賣超日報)
     twse_url = "https://openapi.twse.com.tw/v1/fund/BFI82U"
-    res_twse = requests.get(twse_url, timeout=10).json()
     foreign_spot = 0
-    for row in res_twse:
-        if "外資及陸資" in row.get("單位名稱", ""):
-            # 單位為新台幣元，轉為億元
-            foreign_spot = int(row.get("買賣差額", 0).replace(",", "")) / 1e8
-            break
+    try:
+        res_twse = requests.get(twse_url, headers=headers, timeout=15)
+        res_twse.raise_for_status()  # 若 HTTP 狀態碼非 200，會拋出錯誤
+        
+        # 確保回傳內容存在且能解析為 JSON
+        if res_twse.text.strip():
+            twse_data = res_twse.json()
+            for row in twse_data:
+                if "外資及陸資" in row.get("單位名稱", ""):
+                    foreign_spot = int(row.get("買賣差額", 0).replace(",", "")) / 1e8
+                    break
+    except Exception as e:
+        print(f"⚠️ 取得證交所現貨資料失敗: {e}")
+        # 若失敗則 foreign_spot 維持 0，讓程式不崩潰繼續執行
             
     # 2. 期交所三大法人台指期未平倉
     taifex_url = "https://openapi.taifex.com.tw/v1/DailyForeignFutures"
-    res_taifex = requests.get(taifex_url, timeout=10).json()
     foreign_futures_oi = 0
     futures_oi_diff = 0
-    
-    # 篩選台指期 (TX) 的外資數據
-    for row in res_taifex:
-        if row.get("ContractId") == "TX" and "外資" in row.get("Identity", ""):
-            foreign_futures_oi = int(row.get("NetOpenInterest", 0))
-            futures_oi_diff = int(row.get("NetOpenInterestChange", 0))
-            break
+    try:
+        res_taifex = requests.get(taifex_url, headers=headers, timeout=15)
+        res_taifex.raise_for_status()
+        
+        if res_taifex.text.strip():
+            taifex_data = res_taifex.json()
+            # 篩選台指期 (TX) 的外資數據
+            for row in taifex_data:
+                if row.get("ContractId") == "TX" and "外資" in row.get("Identity", ""):
+                    foreign_futures_oi = int(row.get("NetOpenInterest", 0))
+                    futures_oi_diff = int(row.get("NetOpenInterestChange", 0))
+                    break
+    except Exception as e:
+        print(f"⚠️ 取得期交所期貨資料失敗: {e}")
 
     # 籌碼評分
     spot_score = 1 if foreign_spot > 50 else (-1 if foreign_spot < -50 else 0)
