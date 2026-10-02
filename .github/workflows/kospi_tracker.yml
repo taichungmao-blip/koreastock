@@ -1,33 +1,30 @@
-name: KOSPI Daily Tracker
+name: Market Monitor Automation
 
 on:
   schedule:
-    # 這裡使用 UTC 時間。UTC 07:30 = 台灣時間 15:30 (每週一到週五)
-    - cron: '30 6 * * 1-5'
-  workflow_dispatch: 
+    # 台灣時間 15:30 (UTC 07:30)，週一至週五
+    - cron: '30 7 * * 1-5'
+  workflow_dispatch: # 支援手動立即觸發測試
 
 jobs:
-  run-tracker:
+  run-monitor:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v4
 
-    - name: Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10' 
+      - name: Set up Python
+        uses: setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
 
-    - name: Install Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install yfinance pandas matplotlib requests deep-translator
+      - name: Install dependencies
+        run: |
+          pip install requests yfinance pandas
 
-    - name: Run KOSPI Tracker
-      env:
-        # 從 GitHub Secrets 中讀取 Webhook 網址
-        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-      run: |
-        # 請確保這裡的檔名與上傳的 Python 檔名完全一致
-        python kospi_tracker_all.py
+      - name: Execute Monitor Script
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python monitor.py
