@@ -39,7 +39,7 @@ def get_macro_indicators():
     return result
 
 def get_institutional_data():
-    """心法 2：獲取外資現貨買賣超與台指期淨未平倉口數 (導入均線動態評分)"""
+    """心法 2：獲取外資現貨買賣超與台指期淨未平倉口數 (導入 MA5 與 MA10)"""
     finmind_url = "https://api.finmindtrade.com/api/v4/data"
     
     # 1. 證交所外資現貨買賣超
@@ -64,15 +64,16 @@ def get_institutional_data():
     except Exception as e:
         spot_error = f"FinMind 現貨請求失敗: {str(e)[:40]}"
         
-    # 2. 期交所三大法人台指期未平倉 (拉長為 15 天以計算 5 日均線)
+    # 2. 期交所三大法人台指期未平倉 (拉長為 30 天以確保滿 10 個交易日)
     params_futures = {
         "dataset": "TaiwanFuturesInstitutionalInvestors",
         "data_id": "TX",
-        "start_date": (datetime.now() - pd.Timedelta(days=15)).strftime("%Y-%m-%d")
+        "start_date": (datetime.now() - pd.Timedelta(days=30)).strftime("%Y-%m-%d")
     }
     foreign_futures_oi = 0
     futures_oi_diff = 0
     futures_ma5 = 0
+    futures_ma10 = 0
     futures_error = ""
     try:
         res_f = requests.get(finmind_url, params_futures, timeout=15)
@@ -96,17 +97,21 @@ def get_institutional_data():
                         short_oi = int(d_data.get("short_open_interest_balance_volume", 0))
                         daily_oi_list.append(long_oi - short_oi)
                     
-                    # 取最新數值與變化
                     foreign_futures_oi = daily_oi_list[-1]
                     if len(daily_oi_list) >= 2:
                         futures_oi_diff = foreign_futures_oi - daily_oi_list[-2]
                         
                     # 計算 5 日均線
                     if len(daily_oi_list) >= 5:
-                        futures_ma5 = sum(daily_oi_list[-5:]) / 5
+                        futures_ma5 = int(sum(daily_oi_list[-5:]) / 5)
                     else:
-                        futures_ma5 = sum(daily_oi_list) / len(daily_oi_list)
-                    futures_ma5 = int(futures_ma5)
+                        futures_ma5 = int(sum(daily_oi_list) / len(daily_oi_list))
+                        
+                    # 計算 10 日均線
+                    if len(daily_oi_list) >= 10:
+                        futures_ma10 = int(sum(daily_oi_list[-10:]) / 10)
+                    else:
+                        futures_ma10 = int(sum(daily_oi_list) / len(daily_oi_list))
                 else:
                     futures_error = "FinMind 篩選後無外資期貨資料"
             else:
@@ -116,16 +121,18 @@ def get_institutional_data():
     except Exception as e:
         futures_error = f"期貨請求失敗: {str(e).splitlines()[0][:40]}"
 
-    # 計算評分：現貨不動，期貨改看對 5 日均線的「乖離」 (假設偏離 5000 口以上視為趨勢表態)
+    # 綜合評分：結合短線動能(乖離)與中線趨勢(均線死亡交叉)
     spot_score = 1 if foreign_spot > 50 else (-1 if foreign_spot < -50 else 0)
     
     oi_deviation = foreign_futures_oi - futures_ma5
     if oi_deviation > 5000:
-        futures_score = 1    # 積極佈多單
+        futures_score = 1    # 短線急補空單/佈多單
     elif oi_deviation < -5000:
-        futures_score = -1   # 積極增空單
+        futures_score = -1   # 短線急殺建空單
+    elif futures_ma5 < futures_ma10:
+        futures_score = -1   # 緩跌：5日均線跌破10日均線
     else:
-        futures_score = 0    # 維持常態水位 (無論絕對值多負，都視為中性)
+        futures_score = 0    # 維持常態水位
 
     warning_flag = (foreign_spot > 20 and futures_oi_diff < -3000)
 
@@ -136,6 +143,7 @@ def get_institutional_data():
         "futures_oi": foreign_futures_oi,
         "futures_diff": futures_oi_diff,
         "futures_ma5": futures_ma5,
+        "futures_ma10": futures_ma10,
         "futures_score": futures_score,
         "futures_error": futures_error,
         "warning": warning_flag
@@ -175,15 +183,16 @@ def send_discord_notification(macro, chips, total_score, status, allocation, col
     if chips.get('spot_error'):
         spot_text += f"\n  ⚠️ **抓取錯誤**: `{chips['spot_error']}`"
         
-    # 加入 5 日均線與乖離視覺化
+    # 同步顯示 5MA 與 10MA
     futures_text = f"• 外資台指期淨未平倉：`{chips['futures_oi']:,} 口` (日變化: `{chips['futures_diff']:,}` 口)\n" \
-                   f"• 5日均量基準：`{chips['futures_ma5']:,} 口` (乖離評分: {chips['futures_score']})"
+                   f"• 均線基準：5MA `{chips['futures_ma5']:,}` | 10MA `{chips['futures_ma10']:,}`\n" \
+                   f"• 期貨綜合評分：`{chips['futures_score']}`"
     if chips.get('futures_error'):
         futures_text += f"\n  ⚠️ **抓取錯誤**: `{chips['futures_error']}`"
     
     embed = {
         "title": f"📊 陳族元投資心法 - 大盤環境與籌碼日報 ({today})",
-        "description": f"**總體評估：{status}**\n建議資金水位：`{allocation}` (評分: {total_score}/+4)",
+        "description": f"**總體評估：{status}**\n建議資金水位：`{allocation}` (總分: {total_score}/+4)",
         "color": color,
         "fields": [
             {
@@ -193,7 +202,7 @@ def send_discord_notification(macro, chips, total_score, status, allocation, col
                 "inline": False
             },
             {
-                "name": "🎯 心法 2：外資籌碼指標 (動態均線修正版)",
+                "name": "🎯 心法 2：外資籌碼指標 (動態均線雙均防禦版)",
                 "value": f"{spot_text}\n{futures_text}",
                 "inline": False
             }
