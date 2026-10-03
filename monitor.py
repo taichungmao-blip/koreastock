@@ -111,6 +111,23 @@ def get_institutional_data():
             futures_error = "FinMind 期貨 API 回傳空陣列"
     except Exception as e:
         futures_error = f"期貨請求失敗: {str(e).splitlines()[0][:40]}"
+
+    # 計算評分
+    spot_score = 1 if foreign_spot > 50 else (-1 if foreign_spot < -50 else 0)
+    futures_score = 1 if foreign_futures_oi > 0 else (-1 if foreign_futures_oi < -20000 else 0)
+    warning_flag = (foreign_spot > 20 and futures_oi_diff < -3000)
+
+    # 確保資料被正確回傳給 evaluate_strategy (請勿刪除此區塊)
+    return {
+        "spot": round(foreign_spot, 2),
+        "spot_score": spot_score,
+        "spot_error": spot_error,
+        "futures_oi": foreign_futures_oi,
+        "futures_diff": futures_oi_diff,
+        "futures_score": futures_score,
+        "futures_error": futures_error,
+        "warning": warning_flag
+    }
 def evaluate_strategy(macro, chips):
     total_score = (macro["dxy"]["score"] + macro["tnx"]["score"] + 
                    chips["spot_score"] + chips["futures_score"])
