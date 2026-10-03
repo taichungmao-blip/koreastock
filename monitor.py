@@ -81,9 +81,9 @@ def get_institutional_data():
         if data_f.get("msg") == "success" and len(data_f.get("data", [])) > 0:
             df_f = pd.DataFrame(data_f["data"])
             
-            # 【修正】拔除 item 篩選，因為資料已全部是 TX，只需過濾外資
-            if "name" in df_f.columns:
-                tx_df = df_f[df_f["name"].astype(str).str.contains("Foreign|外資", regex=True, na=False)]
+            # 使用實際存在的 institutional_investors 欄位來過濾外資
+            if "institutional_investors" in df_f.columns:
+                tx_df = df_f[df_f["institutional_investors"].astype(str).str.contains("外資及陸資|外資|Foreign", regex=True, na=False)]
                 
                 if not tx_df.empty:
                     dates = sorted(tx_df["date"].unique())
@@ -91,41 +91,26 @@ def get_institutional_data():
                     
                     if not latest_data.empty:
                         row = latest_data.iloc[0]
-                        long_oi = int(row.get("long_oi_volume", row.get("long_oi_qty", 0)))
-                        short_oi = int(row.get("short_oi_volume", row.get("short_oi_qty", 0)))
+                        # 擷取正確的未平倉餘額欄位
+                        long_oi = int(row.get("long_open_interest_balance_volume", 0))
+                        short_oi = int(row.get("short_open_interest_balance_volume", 0))
                         foreign_futures_oi = long_oi - short_oi
                         
                         if len(dates) >= 2:
                             prev_data = tx_df[tx_df["date"] == dates[-2]]
                             if not prev_data.empty:
                                 prev_row = prev_data.iloc[0]
-                                prev_long = int(prev_row.get("long_oi_volume", prev_row.get("long_oi_qty", 0)))
-                                prev_short = int(prev_row.get("short_oi_volume", prev_row.get("short_oi_qty", 0)))
+                                prev_long = int(prev_row.get("long_open_interest_balance_volume", 0))
+                                prev_short = int(prev_row.get("short_open_interest_balance_volume", 0))
                                 futures_oi_diff = foreign_futures_oi - (prev_long - prev_short)
                 else:
                     futures_error = "FinMind 篩選後無外資期貨資料"
             else:
-                futures_error = f"找不到 name 欄位，現有欄位: {list(df_f.columns)}"
+                futures_error = f"找不到 institutional_investors 欄位，現有欄位: {list(df_f.columns)}"
         else:
             futures_error = "FinMind 期貨 API 回傳空陣列"
     except Exception as e:
-        # 只取第一行的錯誤訊息，避免過長
         futures_error = f"期貨請求失敗: {str(e).splitlines()[0][:40]}"
-
-    spot_score = 1 if foreign_spot > 50 else (-1 if foreign_spot < -50 else 0)
-    futures_score = 1 if foreign_futures_oi > 0 else (-1 if foreign_futures_oi < -20000 else 0)
-    warning_flag = (foreign_spot > 20 and futures_oi_diff < -3000)
-
-    return {
-        "spot": round(foreign_spot, 2),
-        "spot_score": spot_score,
-        "spot_error": spot_error,
-        "futures_oi": foreign_futures_oi,
-        "futures_diff": futures_oi_diff,
-        "futures_score": futures_score,
-        "futures_error": futures_error,
-        "warning": warning_flag
-    }
 def evaluate_strategy(macro, chips):
     total_score = (macro["dxy"]["score"] + macro["tnx"]["score"] + 
                    chips["spot_score"] + chips["futures_score"])
