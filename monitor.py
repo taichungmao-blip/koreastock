@@ -9,24 +9,38 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 def get_macro_indicators():
     """心法 1：獲取美元指數 (DX-Y.NYB) 與 10 年美債殖利率 (^TNX)"""
     tickers = ["DX-Y.NYB", "^TNX"]
-    data = yf.download(tickers, period="1mo", interval="1d", progress=False)['Close']
     
-    dxy_current = data['DX-Y.NYB'].dropna().iloc[-1]
-    dxy_ma20 = data['DX-Y.NYB'].dropna().tail(20).mean()
-    dxy_diff = dxy_current - data['DX-Y.NYB'].dropna().iloc[-2]
-    
-    tnx_current = data['^TNX'].dropna().iloc[-1]
-    tnx_ma20 = data['^TNX'].dropna().tail(20).mean()
-    tnx_diff = tnx_current - data['^TNX'].dropna().iloc[-2]
-    
-    # 判斷多空 (DXY/TNX 走弱有利資金回流台股)
-    dxy_score = 1 if (dxy_current < dxy_ma20 and dxy_diff <= 0) else (-1 if dxy_current > dxy_ma20 and dxy_diff > 0 else 0)
-    tnx_score = 1 if (tnx_current < tnx_ma20 and tnx_diff <= 0) else (-1 if tnx_current > tnx_ma20 and tnx_diff > 0 else 0)
-    
-    return {
-        "dxy": {"val": round(dxy_current, 2), "score": dxy_score},
-        "tnx": {"val": round(tnx_current, 3), "score": tnx_score}
+    # 建立預設值，避免抓取失敗時程式崩潰
+    result = {
+        "dxy": {"val": 0, "score": 0},
+        "tnx": {"val": 0, "score": 0}
     }
+    
+    try:
+        data = yf.download(tickers, period="1mo", interval="1d", progress=False)['Close']
+        
+        # 處理美元指數，先確認資料筆數是否足夠
+        dxy_series = data['DX-Y.NYB'].dropna()
+        if len(dxy_series) >= 2:
+            dxy_current = dxy_series.iloc[-1]
+            dxy_ma20 = dxy_series.tail(20).mean()
+            dxy_diff = dxy_current - dxy_series.iloc[-2]
+            result["dxy"]["val"] = round(dxy_current, 2)
+            result["dxy"]["score"] = 1 if (dxy_current < dxy_ma20 and dxy_diff <= 0) else (-1 if dxy_current > dxy_ma20 and dxy_diff > 0 else 0)
+            
+        # 處理美債殖利率，先確認資料筆數是否足夠
+        tnx_series = data['^TNX'].dropna()
+        if len(tnx_series) >= 2:
+            tnx_current = tnx_series.iloc[-1]
+            tnx_ma20 = tnx_series.tail(20).mean()
+            tnx_diff = tnx_current - tnx_series.iloc[-2]
+            result["tnx"]["val"] = round(tnx_current, 3)
+            result["tnx"]["score"] = 1 if (tnx_current < tnx_ma20 and tnx_diff <= 0) else (-1 if tnx_current > tnx_ma20 and tnx_diff > 0 else 0)
+            
+    except Exception as e:
+        print(f"⚠️ 取得總經資料失敗: {e}")
+        
+    return result
 
 def get_institutional_data():
     """心法 2：獲取外資現貨買賣超與台指期淨未平倉口數"""
