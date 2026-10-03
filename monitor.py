@@ -39,7 +39,7 @@ def get_macro_indicators():
     return result
 
 def get_institutional_data():
-    """心法 2：獲取外資現貨買賣超與台指期淨未平倉口數 (導入 MA5 與 MA10)"""
+    """心法 2：獲取外資現貨買賣超與台指期淨未平倉口數 (導入 MA5、MA10 與防假跌破門檻)"""
     finmind_url = "https://api.finmindtrade.com/api/v4/data"
     
     # 1. 證交所外資現貨買賣超
@@ -64,7 +64,7 @@ def get_institutional_data():
     except Exception as e:
         spot_error = f"FinMind 現貨請求失敗: {str(e)[:40]}"
         
-    # 2. 期交所三大法人台指期未平倉 (拉長為 30 天以確保滿 10 個交易日)
+    # 2. 期交所三大法人台指期未平倉
     params_futures = {
         "dataset": "TaiwanFuturesInstitutionalInvestors",
         "data_id": "TX",
@@ -121,7 +121,7 @@ def get_institutional_data():
     except Exception as e:
         futures_error = f"期貨請求失敗: {str(e).splitlines()[0][:40]}"
 
-    # 綜合評分：結合短線動能(乖離)與中線趨勢(均線死亡交叉)
+    # 綜合評分：結合短線動能(乖離)與中線趨勢(實質死亡交叉)
     spot_score = 1 if foreign_spot > 50 else (-1 if foreign_spot < -50 else 0)
     
     oi_deviation = foreign_futures_oi - futures_ma5
@@ -129,8 +129,8 @@ def get_institutional_data():
         futures_score = 1    # 短線急補空單/佈多單
     elif oi_deviation < -5000:
         futures_score = -1   # 短線急殺建空單
-    elif futures_ma5 < futures_ma10:
-        futures_score = -1   # 緩跌：5日均線跌破10日均線
+    elif (futures_ma10 - futures_ma5) > 3000:
+        futures_score = -1   # 緩跌：5MA實質跌破10MA超過3000口
     else:
         futures_score = 0    # 維持常態水位
 
@@ -202,7 +202,7 @@ def send_discord_notification(macro, chips, total_score, status, allocation, col
                 "inline": False
             },
             {
-                "name": "🎯 心法 2：外資籌碼指標 (動態均線雙均防禦版)",
+                "name": "🎯 心法 2：外資籌碼指標 (緩衝門檻修正版)",
                 "value": f"{spot_text}\n{futures_text}",
                 "inline": False
             }
