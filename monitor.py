@@ -135,7 +135,7 @@ def get_institutional_data():
         futures_score = 1    # 短線急補空單/佈多單
     elif oi_deviation < -5000:
         futures_score = -1   # 短線急殺建空單
-    elif (futures_ma10 - futures_ma5) > 3000:
+    elif (futures_ma10 - futures_ma5) > 1500:
         futures_score = -1   # 緩跌：5MA實質跌破10MA超過3000口
     else:
         futures_score = 0    # 維持常態水位
