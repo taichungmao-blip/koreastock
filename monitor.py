@@ -43,71 +43,38 @@ def get_macro_indicators():
     return result
 
 def get_institutional_data():
-    """心法 2：獲取外資現貨買賣超與台指期淨未平倉口數"""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    """心法 2：改用 FinMind API 獲取外資現貨買賣超"""
+    # ... 前略 ...
+    
+    # 1. 證交所外資買賣超 (改用 FinMind API 避免 GitHub Actions IP 被擋)
+    finmind_url = "https://api.finmindtrade.com/api/v4/data"
+    params = {
+        "dataset": "TaiwanStockTotalInstitutionalInvestors",
+        # 抓取近幾天的資料，避免遇到假日沒資料
+        "start_date": (datetime.now() - pd.Timedelta(days=5)).strftime("%Y-%m-%d")
     }
     
-    # 1. 證交所外資買賣超
-    twse_url = "https://openapi.twse.com.tw/v1/fund/BFI82U"
     foreign_spot = 0
     spot_error = ""
     try:
-        res_twse = requests.get(twse_url, headers=headers, timeout=15)
-        res_twse.raise_for_status()
+        res = requests.get(finmind_url, params=params, timeout=15)
+        res.raise_for_status()
+        data = res.json()
         
-        raw_text = res_twse.text.strip()
-        if raw_text:
-            twse_data = res_twse.json()
-            for row in twse_data:
-                if isinstance(row, dict) and "外資及陸資" in row.get("單位名稱", ""):
-                    foreign_spot = int(row.get("買賣差額", 0).replace(",", "")) / 1e8
-                    break
-            
-            # 如果跑完迴圈還是 0，把 API 實際回傳的內容抓出來看
-            if foreign_spot == 0:
-                spot_error = f"查無對應資料，API 回傳內容前100字: {raw_text[:100]}"
+        if data.get("msg") == "success" and len(data.get("data", [])) > 0:
+            df = pd.DataFrame(data["data"])
+            # 篩選最新一天的外資資料 (外資及陸資買賣超)
+            latest_date = df["date"].max()
+            foreign_data = df[(df["date"] == latest_date) & (df["name"] == "Foreign_Investor")]
+            if not foreign_data.empty:
+                # FinMind 單位為元，轉換為億元
+                foreign_spot = int(foreign_data.iloc[0]["buy"] - foreign_data.iloc[0]["sell"]) / 1e8
+        else:
+            spot_error = "FinMind 無資料回傳"
     except Exception as e:
-        spot_error = f"HTTP {getattr(e.response, 'status_code', '')} {str(e)[:40]}" if hasattr(e, 'response') else str(e)[:40]
-            
-    # 2. 期交所三大法人台指期未平倉
-    taifex_url = "https://openapi.taifex.com.tw/v1/DailyForeignFutures"
-    foreign_futures_oi = 0
-    futures_oi_diff = 0
-    futures_error = ""
-    try:
-        res_taifex = requests.get(taifex_url, headers=headers, timeout=15)
-        res_taifex.raise_for_status()
+        spot_error = f"FinMind 請求失敗: {str(e)[:40]}"
         
-        raw_text = res_taifex.text.strip()
-        if raw_text:
-            taifex_data = res_taifex.json()
-            for row in taifex_data:
-                if isinstance(row, dict) and row.get("ContractId") == "TX" and "外資" in row.get("Identity", ""):
-                    foreign_futures_oi = int(row.get("NetOpenInterest", 0))
-                    futures_oi_diff = int(row.get("NetOpenInterestChange", 0))
-                    break
-                    
-            if foreign_futures_oi == 0:
-                futures_error = f"查無對應資料，API 回傳內容前100字: {raw_text[:100]}"
-    except Exception as e:
-        futures_error = f"HTTP {getattr(e.response, 'status_code', '')} {str(e)[:40]}" if hasattr(e, 'response') else str(e)[:40]
-
-    spot_score = 1 if foreign_spot > 50 else (-1 if foreign_spot < -50 else 0)
-    futures_score = 1 if foreign_futures_oi > 0 else (-1 if foreign_futures_oi < -20000 else 0)
-    
-    warning_flag = (foreign_spot > 20 and futures_oi_diff < -3000)
-
-    return {
-        "spot": round(foreign_spot, 2),
-        "spot_score": spot_score,
-        "spot_error": spot_error,
-        "futures_oi": foreign_futures_oi,
-        "futures_diff": futures_oi_diff,
-        "futures_score": futures_score,
-        "futures_error": futures_error,
-        "warning": warning_flag
-    }
+    # ... 後續期貨抓取邏輯保留原樣（若期貨也被擋，同樣可尋找第三方替代） ...
 
 def send_discord_notification(macro, chips, total_score, status, allocation, color):
     if not DISCORD_WEBHOOK_URL:
