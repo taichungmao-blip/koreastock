@@ -43,14 +43,14 @@ def get_macro_indicators():
     return result
 
 def get_institutional_data():
-    """心法 2：獲取外資現貨買賣超 (FinMind) 與台指期淨未平倉口數 (期交所)"""
+    """心法 2：獲取外資現貨買賣超與台指期淨未平倉口數 (全面改用 FinMind API)"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
-    # 1. 證交所外資買賣超 (使用 FinMind API 避免 GitHub Actions IP 被擋)
+    # 1. 證交所外資現貨買賣超 (FinMind)
     finmind_url = "https://api.finmindtrade.com/api/v4/data"
-    params = {
+    params_spot = {
         "dataset": "TaiwanStockTotalInstitutionalInvestors",
         "start_date": (datetime.now() - pd.Timedelta(days=5)).strftime("%Y-%m-%d")
     }
@@ -58,23 +58,19 @@ def get_institutional_data():
     foreign_spot = 0
     spot_error = ""
     try:
-        res = requests.get(finmind_url, params=params, timeout=15)
+        res = requests.get(finmind_url, params=params_spot, timeout=15)
         res.raise_for_status()
         data = res.json()
-        
         if data.get("msg") == "success" and len(data.get("data", [])) > 0:
             df = pd.DataFrame(data["data"])
             latest_date = df["date"].max()
             foreign_data = df[(df["date"] == latest_date) & (df["name"] == "Foreign_Investor")]
             if not foreign_data.empty:
                 foreign_spot = int(foreign_data.iloc[0]["buy"] - foreign_data.iloc[0]["sell"]) / 1e8
-        else:
-            spot_error = "FinMind 無資料回傳"
     except Exception as e:
-        spot_error = f"FinMind 請求失敗: {str(e)[:40]}"
+        spot_error = f"FinMind 現貨請求失敗: {str(e)[:40]}"
         
-    # 2. 期交所三大法人台指期未平倉 (改用 FinMind API)
-    finmind_futures_url = "https://api.finmindtrade.com/api/v4/data"
+    # 2. 期交所三大法人台指期未平倉 (FinMind)
     params_futures = {
         "dataset": "TaiwanFuturesInstitutionalInvestors",
         "start_date": (datetime.now() - pd.Timedelta(days=5)).strftime("%Y-%m-%d")
@@ -84,55 +80,50 @@ def get_institutional_data():
     futures_oi_diff = 0
     futures_error = ""
     try:
-        res_f = requests.get(finmind_futures_url, params=params_futures, timeout=15)
+        res_f = requests.get(finmind_url, params=params_futures, timeout=15)
         res_f.raise_for_status()
         data_f = res_f.json()
         
         if data_f.get("msg") == "success" and len(data_f.get("data", [])) > 0:
             df_f = pd.DataFrame(data_f["data"])
             
-            # 放寬篩選條件：包含 TX 或台(臺)股期貨，且名稱包含 Foreign 或外資
-            tx_df = df_f[
-                df_f["item"].astype(str).str.contains("TX|臺股期貨|台股期貨", regex=True, na=False) & 
-                df_f["name"].astype(str).str.contains("外資|Foreign", regex=True, na=False)
-            ]
+            # 精確篩選：台股期貨 (TX) 與 外資 (Foreign_Investor)
+            tx_df = df_f[(df_f["item"] == "TX") & (df_f["name"] == "Foreign_Investor")]
             
             if not tx_df.empty:
                 dates = sorted(tx_df["date"].unique())
-                latest_date = dates[-1]
                 
-                latest_data = tx_df[tx_df["date"] == latest_date]
-                if not latest_data.empty:
-                    # FinMind 的未平倉口數欄位為 volume
-                    long_oi = int(latest_data.iloc[0].get("long_oi_volume", 0))
-                    short_oi = int(latest_data.iloc[0].get("short_oi_volume", 0))
-                    foreign_futures_oi = long_oi - short_oi
+                # 取得最新交易日資料，轉為字典型態以利動態尋找欄位
+                latest_data = tx_df[tx_df["date"] == dates[-1]]
+                row_dict = latest_data.iloc[0].to_dict()
                 
-                if len(dates) >= 2:
-                    prev_date = dates[-2]
-                    prev_data = tx_df[tx_df["date"] == prev_date]
-                    if not prev_data.empty:
-                        prev_long = int(prev_data.iloc[0].get("long_oi_volume", 0))
-                        prev_short = int(prev_data.iloc[0].get("short_oi_volume", 0))
-                        prev_oi = prev_long - prev_short
+                # 動態尋找包含 long/short 與 oi (未平倉) 關鍵字的欄位
+                long_col = next((col for col in row_dict if "long" in col and "oi" in col), None)
+                short_col = next((col for col in row_dict if "short" in col and "oi" in col), None)
+                
+                if long_col and short_col:
+                    foreign_futures_oi = int(row_dict[long_col]) - int(row_dict[short_col])
+                    
+                    # 取得前一交易日計算日變化
+                    if len(dates) >= 2:
+                        prev_data = tx_df[tx_df["date"] == dates[-2]]
+                        prev_dict = prev_data.iloc[0].to_dict()
+                        prev_oi = int(prev_dict.get(long_col, 0)) - int(prev_dict.get(short_col, 0))
                         futures_oi_diff = foreign_futures_oi - prev_oi
+                else:
+                    futures_error = f"找不到未平倉(OI)欄位！目前可用欄位：{list(row_dict.keys())}"
             else:
-                # 若篩選後為空，將 FinMind 實際的 item 與 name 印出以利除錯
-                sample_items = ", ".join(df_f["item"].unique()[:5])
-                sample_names = ", ".join(df_f["name"].unique()[:3])
-                futures_error = f"找不到台指期資料。實際 item: {sample_items} / name: {sample_names}"
+                futures_error = f"找不到 TX 與 Foreign_Investor。實際 item 範例: {df_f['item'].unique()[:3]}"
         else:
             futures_error = "FinMind 期貨無資料回傳"
     except Exception as e:
         futures_error = f"FinMind 期貨請求失敗: {str(e)[:40]}"
+
     # 籌碼評分
     spot_score = 1 if foreign_spot > 50 else (-1 if foreign_spot < -50 else 0)
     futures_score = 1 if foreign_futures_oi > 0 else (-1 if foreign_futures_oi < -20000 else 0)
-    
-    # 陳族元核心警訊
     warning_flag = (foreign_spot > 20 and futures_oi_diff < -3000)
 
-    # 必須確保這裡有 return，evaluate_strategy 才能正確接收資料
     return {
         "spot": round(foreign_spot, 2),
         "spot_score": spot_score,
@@ -151,15 +142,13 @@ def send_discord_notification(macro, chips, total_score, status, allocation, col
 
     today = datetime.now().strftime("%Y-%m-%d")
     
-    # 處理現貨字串與錯誤訊息
     spot_text = f"• 外資現貨買賣超：`{chips['spot']} 億元`"
-    if chips['spot_error']:
-        spot_text += f"\n  ⚠️ **抓取失敗**: `{chips['spot_error']}`"
+    if chips.get('spot_error'):
+        spot_text += f"\n  ⚠️ **抓取錯誤**: `{chips['spot_error']}`"
         
-    # 處理期貨字串與錯誤訊息
     futures_text = f"• 外資台指期淨未平倉：`{chips['futures_oi']:,} 口` (日變化: `{chips['futures_diff']:,}` 口)"
-    if chips['futures_error']:
-        futures_text += f"\n  ⚠️ **抓取失敗**: `{chips['futures_error']}`"
+    if chips.get('futures_error'):
+        futures_text += f"\n  ⚠️ **抓取錯誤**: `{chips['futures_error']}`"
     
     embed = {
         "title": f"📊 陳族元投資心法 - 大盤環境與籌碼日報 ({today})",
