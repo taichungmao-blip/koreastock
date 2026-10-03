@@ -30,19 +30,18 @@ def get_macro_indicators():
 
 def get_institutional_data():
     """心法 2：獲取外資現貨買賣超與台指期淨未平倉口數"""
-    # 加入 User-Agent 偽裝成一般瀏覽器，避免被證交所防護機制阻擋
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
-    # 1. 證交所外資買賣超 (三大法人買賣超日報)
+    # 1. 證交所外資買賣超
     twse_url = "https://openapi.twse.com.tw/v1/fund/BFI82U"
     foreign_spot = 0
+    spot_error = ""
     try:
         res_twse = requests.get(twse_url, headers=headers, timeout=15)
-        res_twse.raise_for_status()  # 若 HTTP 狀態碼非 200，會拋出錯誤
+        res_twse.raise_for_status()
         
-        # 確保回傳內容存在且能解析為 JSON
         if res_twse.text.strip():
             twse_data = res_twse.json()
             for row in twse_data:
@@ -50,44 +49,88 @@ def get_institutional_data():
                     foreign_spot = int(row.get("買賣差額", 0).replace(",", "")) / 1e8
                     break
     except Exception as e:
-        print(f"⚠️ 取得證交所現貨資料失敗: {e}")
-        # 若失敗則 foreign_spot 維持 0，讓程式不崩潰繼續執行
+        spot_error = f"HTTP {getattr(e.response, 'status_code', '')} {str(e)[:40]}" if hasattr(e, 'response') else str(e)[:40]
             
     # 2. 期交所三大法人台指期未平倉
     taifex_url = "https://openapi.taifex.com.tw/v1/DailyForeignFutures"
     foreign_futures_oi = 0
     futures_oi_diff = 0
+    futures_error = ""
     try:
         res_taifex = requests.get(taifex_url, headers=headers, timeout=15)
         res_taifex.raise_for_status()
         
         if res_taifex.text.strip():
             taifex_data = res_taifex.json()
-            # 篩選台指期 (TX) 的外資數據
             for row in taifex_data:
                 if row.get("ContractId") == "TX" and "外資" in row.get("Identity", ""):
                     foreign_futures_oi = int(row.get("NetOpenInterest", 0))
                     futures_oi_diff = int(row.get("NetOpenInterestChange", 0))
                     break
     except Exception as e:
-        print(f"⚠️ 取得期交所期貨資料失敗: {e}")
+        futures_error = f"HTTP {getattr(e.response, 'status_code', '')} {str(e)[:40]}" if hasattr(e, 'response') else str(e)[:40]
 
-    # 籌碼評分
     spot_score = 1 if foreign_spot > 50 else (-1 if foreign_spot < -50 else 0)
     futures_score = 1 if foreign_futures_oi > 0 else (-1 if foreign_futures_oi < -20000 else 0)
     
-    # 陳族元核心警訊：現貨買超但期貨大幅減碼避險
     warning_flag = (foreign_spot > 20 and futures_oi_diff < -3000)
 
     return {
         "spot": round(foreign_spot, 2),
         "spot_score": spot_score,
+        "spot_error": spot_error,
         "futures_oi": foreign_futures_oi,
         "futures_diff": futures_oi_diff,
         "futures_score": futures_score,
+        "futures_error": futures_error,
         "warning": warning_flag
     }
 
+def send_discord_notification(macro, chips, total_score, status, allocation, color):
+    if not DISCORD_WEBHOOK_URL:
+        print("未設定 DISCORD_WEBHOOK_URL")
+        return
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    # 處理現貨字串與錯誤訊息
+    spot_text = f"• 外資現貨買賣超：`{chips['spot']} 億元`"
+    if chips['spot_error']:
+        spot_text += f"\n  ⚠️ **抓取失敗**: `{chips['spot_error']}`"
+        
+    # 處理期貨字串與錯誤訊息
+    futures_text = f"• 外資台指期淨未平倉：`{chips['futures_oi']:,} 口` (日變化: `{chips['futures_diff']:,}` 口)"
+    if chips['futures_error']:
+        futures_text += f"\n  ⚠️ **抓取失敗**: `{chips['futures_error']}`"
+    
+    embed = {
+        "title": f"📊 陳族元投資心法 - 大盤環境與籌碼日報 ({today})",
+        "description": f"**總體評估：{status}**\n建議資金水位：`{allocation}` (評分: {total_score}/+4)",
+        "color": color,
+        "fields": [
+            {
+                "name": "🌐 心法 1：總經資金指標",
+                "value": f"• 美元指數 (DXY)：`{macro['dxy']['val']}` (趨勢分: {macro['dxy']['score']})\n"
+                         f"• 美 10 年債殖利率：`{macro['tnx']['val']}%` (趨勢分: {macro['tnx']['score']})",
+                "inline": False
+            },
+            {
+                "name": "🎯 心法 2：外資籌碼指標",
+                "value": f"{spot_text}\n{futures_text}",
+                "inline": False
+            }
+        ],
+        "footer": {"text": "覆巢之下無完卵｜自動監控通知"}
+    }
+    
+    if chips["warning"]:
+        embed["fields"].append({
+            "name": "🚨 關鍵轉折警示",
+            "value": "外資呈現「現貨買超、期貨顯著減碼」之背離結構，需嚴防大盤逢高變盤！",
+            "inline": False
+        })
+        
+    requests.post(DISCORD_WEBHOOK_URL, json={"embeds": [embed]}, timeout=10)
 def evaluate_strategy(macro, chips):
     total_score = (macro["dxy"]["score"] + macro["tnx"]["score"] + 
                    chips["spot_score"] + chips["futures_score"])
