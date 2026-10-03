@@ -56,12 +56,17 @@ def get_institutional_data():
         res_twse = requests.get(twse_url, headers=headers, timeout=15)
         res_twse.raise_for_status()
         
-        if res_twse.text.strip():
+        raw_text = res_twse.text.strip()
+        if raw_text:
             twse_data = res_twse.json()
             for row in twse_data:
-                if "外資及陸資" in row.get("單位名稱", ""):
+                if isinstance(row, dict) and "外資及陸資" in row.get("單位名稱", ""):
                     foreign_spot = int(row.get("買賣差額", 0).replace(",", "")) / 1e8
                     break
+            
+            # 如果跑完迴圈還是 0，把 API 實際回傳的內容抓出來看
+            if foreign_spot == 0:
+                spot_error = f"查無對應資料，API 回傳內容前100字: {raw_text[:100]}"
     except Exception as e:
         spot_error = f"HTTP {getattr(e.response, 'status_code', '')} {str(e)[:40]}" if hasattr(e, 'response') else str(e)[:40]
             
@@ -74,13 +79,17 @@ def get_institutional_data():
         res_taifex = requests.get(taifex_url, headers=headers, timeout=15)
         res_taifex.raise_for_status()
         
-        if res_taifex.text.strip():
+        raw_text = res_taifex.text.strip()
+        if raw_text:
             taifex_data = res_taifex.json()
             for row in taifex_data:
-                if row.get("ContractId") == "TX" and "外資" in row.get("Identity", ""):
+                if isinstance(row, dict) and row.get("ContractId") == "TX" and "外資" in row.get("Identity", ""):
                     foreign_futures_oi = int(row.get("NetOpenInterest", 0))
                     futures_oi_diff = int(row.get("NetOpenInterestChange", 0))
                     break
+                    
+            if foreign_futures_oi == 0:
+                futures_error = f"查無對應資料，API 回傳內容前100字: {raw_text[:100]}"
     except Exception as e:
         futures_error = f"HTTP {getattr(e.response, 'status_code', '')} {str(e)[:40]}" if hasattr(e, 'response') else str(e)[:40]
 
