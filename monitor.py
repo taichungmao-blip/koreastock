@@ -39,7 +39,7 @@ def get_macro_indicators():
     return result
 
 def get_institutional_data():
-    """心法 2：獲取外資現貨買賣超與台指期淨未平倉口數 (全面採用 FinMind)"""
+    """心法 2：獲取外資現貨買賣超與台指期淨未平倉口數 (導入均線動態評分)"""
     finmind_url = "https://api.finmindtrade.com/api/v4/data"
     
     # 1. 證交所外資現貨買賣超
@@ -50,7 +50,7 @@ def get_institutional_data():
     foreign_spot = 0
     spot_error = ""
     try:
-        res = requests.get(finmind_url, params=params_spot, timeout=15)
+        res = requests.get(finmind_url, params_spot, timeout=15)
         res.raise_for_status()
         data = res.json()
         if data.get("msg") == "success" and len(data.get("data", [])) > 0:
@@ -64,70 +64,83 @@ def get_institutional_data():
     except Exception as e:
         spot_error = f"FinMind 現貨請求失敗: {str(e)[:40]}"
         
-    # 2. 期交所三大法人台指期未平倉
+    # 2. 期交所三大法人台指期未平倉 (拉長為 15 天以計算 5 日均線)
     params_futures = {
         "dataset": "TaiwanFuturesInstitutionalInvestors",
-        "data_id": "TX",  # API 已過濾台股期貨
-        "start_date": (datetime.now() - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
+        "data_id": "TX",
+        "start_date": (datetime.now() - pd.Timedelta(days=15)).strftime("%Y-%m-%d")
     }
     foreign_futures_oi = 0
     futures_oi_diff = 0
+    futures_ma5 = 0
     futures_error = ""
     try:
-        res_f = requests.get(finmind_url, params=params_futures, timeout=15)
+        res_f = requests.get(finmind_url, params_futures, timeout=15)
         res_f.raise_for_status()
         data_f = res_f.json()
         
         if data_f.get("msg") == "success" and len(data_f.get("data", [])) > 0:
             df_f = pd.DataFrame(data_f["data"])
             
-            # 使用實際存在的 institutional_investors 欄位來過濾外資
             if "institutional_investors" in df_f.columns:
                 tx_df = df_f[df_f["institutional_investors"].astype(str).str.contains("外資及陸資|外資|Foreign", regex=True, na=False)]
                 
                 if not tx_df.empty:
                     dates = sorted(tx_df["date"].unique())
-                    latest_data = tx_df[tx_df["date"] == dates[-1]]
                     
-                    if not latest_data.empty:
-                        row = latest_data.iloc[0]
-                        # 擷取正確的未平倉餘額欄位
-                        long_oi = int(row.get("long_open_interest_balance_volume", 0))
-                        short_oi = int(row.get("short_open_interest_balance_volume", 0))
-                        foreign_futures_oi = long_oi - short_oi
+                    # 計算每日淨未平倉序列
+                    daily_oi_list = []
+                    for d in dates:
+                        d_data = tx_df[tx_df["date"] == d].iloc[0]
+                        long_oi = int(d_data.get("long_open_interest_balance_volume", 0))
+                        short_oi = int(d_data.get("short_open_interest_balance_volume", 0))
+                        daily_oi_list.append(long_oi - short_oi)
+                    
+                    # 取最新數值與變化
+                    foreign_futures_oi = daily_oi_list[-1]
+                    if len(daily_oi_list) >= 2:
+                        futures_oi_diff = foreign_futures_oi - daily_oi_list[-2]
                         
-                        if len(dates) >= 2:
-                            prev_data = tx_df[tx_df["date"] == dates[-2]]
-                            if not prev_data.empty:
-                                prev_row = prev_data.iloc[0]
-                                prev_long = int(prev_row.get("long_open_interest_balance_volume", 0))
-                                prev_short = int(prev_row.get("short_open_interest_balance_volume", 0))
-                                futures_oi_diff = foreign_futures_oi - (prev_long - prev_short)
+                    # 計算 5 日均線
+                    if len(daily_oi_list) >= 5:
+                        futures_ma5 = sum(daily_oi_list[-5:]) / 5
+                    else:
+                        futures_ma5 = sum(daily_oi_list) / len(daily_oi_list)
+                    futures_ma5 = int(futures_ma5)
                 else:
                     futures_error = "FinMind 篩選後無外資期貨資料"
             else:
-                futures_error = f"找不到 institutional_investors 欄位，現有欄位: {list(df_f.columns)}"
+                futures_error = f"找不到 institutional_investors 欄位"
         else:
             futures_error = "FinMind 期貨 API 回傳空陣列"
     except Exception as e:
         futures_error = f"期貨請求失敗: {str(e).splitlines()[0][:40]}"
 
-    # 計算評分
+    # 計算評分：現貨不動，期貨改看對 5 日均線的「乖離」 (假設偏離 5000 口以上視為趨勢表態)
     spot_score = 1 if foreign_spot > 50 else (-1 if foreign_spot < -50 else 0)
-    futures_score = 1 if foreign_futures_oi > 0 else (-1 if foreign_futures_oi < -20000 else 0)
+    
+    oi_deviation = foreign_futures_oi - futures_ma5
+    if oi_deviation > 5000:
+        futures_score = 1    # 積極佈多單
+    elif oi_deviation < -5000:
+        futures_score = -1   # 積極增空單
+    else:
+        futures_score = 0    # 維持常態水位 (無論絕對值多負，都視為中性)
+
     warning_flag = (foreign_spot > 20 and futures_oi_diff < -3000)
 
-    # 確保資料被正確回傳給 evaluate_strategy (請勿刪除此區塊)
     return {
         "spot": round(foreign_spot, 2),
         "spot_score": spot_score,
         "spot_error": spot_error,
         "futures_oi": foreign_futures_oi,
         "futures_diff": futures_oi_diff,
+        "futures_ma5": futures_ma5,
         "futures_score": futures_score,
         "futures_error": futures_error,
         "warning": warning_flag
     }
+
 def evaluate_strategy(macro, chips):
     total_score = (macro["dxy"]["score"] + macro["tnx"]["score"] + 
                    chips["spot_score"] + chips["futures_score"])
@@ -135,11 +148,11 @@ def evaluate_strategy(macro, chips):
     if chips["warning"]:
         status = "⚠️ 警訊發布（現貨買但期貨大減）"
         allocation = "防禦降檔 (≤ 30%)"
-        color = 0xE74C3C  # 紅色
+        color = 0xE74C3C
     elif total_score >= 3:
         status = "🟢 資金與籌碼全面偏多"
         allocation = "積極放大 (80% ~ 100%)"
-        color = 0x2ECC71  # 綠色
+        color = 0x2ECC71
     elif total_score <= -2:
         status = "🔴 資金抽離且外資偏空"
         allocation = "極低持股或避險 (0% ~ 30%)"
@@ -147,7 +160,7 @@ def evaluate_strategy(macro, chips):
     else:
         status = "🟡 盤勢震盪中性"
         allocation = "中性控管 (40% ~ 60%)"
-        color = 0xF1C40F  # 黃色
+        color = 0xF1C40F
         
     return total_score, status, allocation, color
 
@@ -162,7 +175,9 @@ def send_discord_notification(macro, chips, total_score, status, allocation, col
     if chips.get('spot_error'):
         spot_text += f"\n  ⚠️ **抓取錯誤**: `{chips['spot_error']}`"
         
-    futures_text = f"• 外資台指期淨未平倉：`{chips['futures_oi']:,} 口` (日變化: `{chips['futures_diff']:,}` 口)"
+    # 加入 5 日均線與乖離視覺化
+    futures_text = f"• 外資台指期淨未平倉：`{chips['futures_oi']:,} 口` (日變化: `{chips['futures_diff']:,}` 口)\n" \
+                   f"• 5日均量基準：`{chips['futures_ma5']:,} 口` (乖離評分: {chips['futures_score']})"
     if chips.get('futures_error'):
         futures_text += f"\n  ⚠️ **抓取錯誤**: `{chips['futures_error']}`"
     
@@ -178,7 +193,7 @@ def send_discord_notification(macro, chips, total_score, status, allocation, col
                 "inline": False
             },
             {
-                "name": "🎯 心法 2：外資籌碼指標",
+                "name": "🎯 心法 2：外資籌碼指標 (動態均線修正版)",
                 "value": f"{spot_text}\n{futures_text}",
                 "inline": False
             }
