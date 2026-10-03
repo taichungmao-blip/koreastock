@@ -73,29 +73,52 @@ def get_institutional_data():
     except Exception as e:
         spot_error = f"FinMind 請求失敗: {str(e)[:40]}"
         
-    # 2. 期交所三大法人台指期未平倉 (官方 API)
-    taifex_url = "https://openapi.taifex.com.tw/v1/DailyForeignFutures"
+    # 2. 期交所三大法人台指期未平倉 (改用 FinMind API 避免 IP 被擋)
+    finmind_futures_url = "https://api.finmindtrade.com/api/v4/data"
+    params_futures = {
+        "dataset": "TaiwanFuturesInstitutionalInvestors",
+        "start_date": (datetime.now() - pd.Timedelta(days=5)).strftime("%Y-%m-%d")
+    }
+    
     foreign_futures_oi = 0
     futures_oi_diff = 0
     futures_error = ""
     try:
-        res_taifex = requests.get(taifex_url, headers=headers, timeout=15)
-        res_taifex.raise_for_status()
+        res_f = requests.get(finmind_futures_url, params=params_futures, timeout=15)
+        res_f.raise_for_status()
+        data_f = res_f.json()
         
-        raw_text = res_taifex.text.strip()
-        if raw_text:
-            taifex_data = res_taifex.json()
-            for row in taifex_data:
-                if isinstance(row, dict) and row.get("ContractId") == "TX" and "外資" in row.get("Identity", ""):
-                    foreign_futures_oi = int(row.get("NetOpenInterest", 0))
-                    futures_oi_diff = int(row.get("NetOpenInterestChange", 0))
-                    break
-                    
-            if foreign_futures_oi == 0:
-                futures_error = f"查無對應資料，API 回傳內容前100字: {raw_text[:100]}"
+        if data_f.get("msg") == "success" and len(data_f.get("data", [])) > 0:
+            df_f = pd.DataFrame(data_f["data"])
+            
+            # 篩選標的為台股期貨，並過濾外資及陸資
+            tx_df = df_f[df_f["item"].str.contains("臺股期貨", na=False) & df_f["name"].str.contains("外資", na=False)]
+            
+            if not tx_df.empty:
+                # 取得所有交易日並排序
+                dates = sorted(tx_df["date"].unique())
+                latest_date = dates[-1]
+                
+                # 計算最新交易日的淨未平倉 (多單未平倉 - 空單未平倉)
+                latest_data = tx_df[tx_df["date"] == latest_date]
+                if not latest_data.empty:
+                    long_oi = int(latest_data.iloc[0].get("long_oi_qty", 0))
+                    short_oi = int(latest_data.iloc[0].get("short_oi_qty", 0))
+                    foreign_futures_oi = long_oi - short_oi
+                
+                # 尋找前一個交易日以計算日變化
+                if len(dates) >= 2:
+                    prev_date = dates[-2]
+                    prev_data = tx_df[tx_df["date"] == prev_date]
+                    if not prev_data.empty:
+                        prev_long = int(prev_data.iloc[0].get("long_oi_qty", 0))
+                        prev_short = int(prev_data.iloc[0].get("short_oi_qty", 0))
+                        prev_oi = prev_long - prev_short
+                        futures_oi_diff = foreign_futures_oi - prev_oi
+        else:
+            futures_error = "FinMind 期貨無資料回傳"
     except Exception as e:
-        futures_error = f"HTTP {getattr(e.response, 'status_code', '')} {str(e)[:40]}" if hasattr(e, 'response') else str(e)[:40]
-
+        futures_error = f"FinMind 期貨請求失敗: {str(e)[:40]}"
     # 籌碼評分
     spot_score = 1 if foreign_spot > 50 else (-1 if foreign_spot < -50 else 0)
     futures_score = 1 if foreign_futures_oi > 0 else (-1 if foreign_futures_oi < -20000 else 0)
