@@ -73,7 +73,7 @@ def get_institutional_data():
     except Exception as e:
         spot_error = f"FinMind 請求失敗: {str(e)[:40]}"
         
-    # 2. 期交所三大法人台指期未平倉 (改用 FinMind API 避免 IP 被擋)
+    # 2. 期交所三大法人台指期未平倉 (改用 FinMind API)
     finmind_futures_url = "https://api.finmindtrade.com/api/v4/data"
     params_futures = {
         "dataset": "TaiwanFuturesInstitutionalInvestors",
@@ -91,30 +91,36 @@ def get_institutional_data():
         if data_f.get("msg") == "success" and len(data_f.get("data", [])) > 0:
             df_f = pd.DataFrame(data_f["data"])
             
-            # 篩選標的為台股期貨，並過濾外資及陸資
-            tx_df = df_f[df_f["item"].str.contains("臺股期貨", na=False) & df_f["name"].str.contains("外資", na=False)]
+            # 放寬篩選條件：包含 TX 或台(臺)股期貨，且名稱包含 Foreign 或外資
+            tx_df = df_f[
+                df_f["item"].astype(str).str.contains("TX|臺股期貨|台股期貨", regex=True, na=False) & 
+                df_f["name"].astype(str).str.contains("外資|Foreign", regex=True, na=False)
+            ]
             
             if not tx_df.empty:
-                # 取得所有交易日並排序
                 dates = sorted(tx_df["date"].unique())
                 latest_date = dates[-1]
                 
-                # 計算最新交易日的淨未平倉 (多單未平倉 - 空單未平倉)
                 latest_data = tx_df[tx_df["date"] == latest_date]
                 if not latest_data.empty:
-                    long_oi = int(latest_data.iloc[0].get("long_oi_qty", 0))
-                    short_oi = int(latest_data.iloc[0].get("short_oi_qty", 0))
+                    # FinMind 的未平倉口數欄位為 volume
+                    long_oi = int(latest_data.iloc[0].get("long_oi_volume", 0))
+                    short_oi = int(latest_data.iloc[0].get("short_oi_volume", 0))
                     foreign_futures_oi = long_oi - short_oi
                 
-                # 尋找前一個交易日以計算日變化
                 if len(dates) >= 2:
                     prev_date = dates[-2]
                     prev_data = tx_df[tx_df["date"] == prev_date]
                     if not prev_data.empty:
-                        prev_long = int(prev_data.iloc[0].get("long_oi_qty", 0))
-                        prev_short = int(prev_data.iloc[0].get("short_oi_qty", 0))
+                        prev_long = int(prev_data.iloc[0].get("long_oi_volume", 0))
+                        prev_short = int(prev_data.iloc[0].get("short_oi_volume", 0))
                         prev_oi = prev_long - prev_short
                         futures_oi_diff = foreign_futures_oi - prev_oi
+            else:
+                # 若篩選後為空，將 FinMind 實際的 item 與 name 印出以利除錯
+                sample_items = ", ".join(df_f["item"].unique()[:5])
+                sample_names = ", ".join(df_f["name"].unique()[:3])
+                futures_error = f"找不到台指期資料。實際 item: {sample_items} / name: {sample_names}"
         else:
             futures_error = "FinMind 期貨無資料回傳"
     except Exception as e:
