@@ -67,6 +67,7 @@ def get_institutional_data():
     # 2. 期交所三大法人台指期未平倉
     params_futures = {
         "dataset": "TaiwanFuturesInstitutionalInvestors",
+        "data_id": "TX",  # 修正：補上 FinMind 期貨資料集必填的商品代碼 (TX = 台股期貨)
         "start_date": (datetime.now() - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
     }
     foreign_futures_oi = 0
