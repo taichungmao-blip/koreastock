@@ -43,14 +43,15 @@ def get_macro_indicators():
     return result
 
 def get_institutional_data():
-    """心法 2：改用 FinMind API 獲取外資現貨買賣超"""
-    # ... 前略 ...
+    """心法 2：獲取外資現貨買賣超 (FinMind) 與台指期淨未平倉口數 (期交所)"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
     
-    # 1. 證交所外資買賣超 (改用 FinMind API 避免 GitHub Actions IP 被擋)
+    # 1. 證交所外資買賣超 (使用 FinMind API 避免 GitHub Actions IP 被擋)
     finmind_url = "https://api.finmindtrade.com/api/v4/data"
     params = {
         "dataset": "TaiwanStockTotalInstitutionalInvestors",
-        # 抓取近幾天的資料，避免遇到假日沒資料
         "start_date": (datetime.now() - pd.Timedelta(days=5)).strftime("%Y-%m-%d")
     }
     
@@ -63,18 +64,56 @@ def get_institutional_data():
         
         if data.get("msg") == "success" and len(data.get("data", [])) > 0:
             df = pd.DataFrame(data["data"])
-            # 篩選最新一天的外資資料 (外資及陸資買賣超)
             latest_date = df["date"].max()
             foreign_data = df[(df["date"] == latest_date) & (df["name"] == "Foreign_Investor")]
             if not foreign_data.empty:
-                # FinMind 單位為元，轉換為億元
                 foreign_spot = int(foreign_data.iloc[0]["buy"] - foreign_data.iloc[0]["sell"]) / 1e8
         else:
             spot_error = "FinMind 無資料回傳"
     except Exception as e:
         spot_error = f"FinMind 請求失敗: {str(e)[:40]}"
         
-    # ... 後續期貨抓取邏輯保留原樣（若期貨也被擋，同樣可尋找第三方替代） ...
+    # 2. 期交所三大法人台指期未平倉 (官方 API)
+    taifex_url = "https://openapi.taifex.com.tw/v1/DailyForeignFutures"
+    foreign_futures_oi = 0
+    futures_oi_diff = 0
+    futures_error = ""
+    try:
+        res_taifex = requests.get(taifex_url, headers=headers, timeout=15)
+        res_taifex.raise_for_status()
+        
+        raw_text = res_taifex.text.strip()
+        if raw_text:
+            taifex_data = res_taifex.json()
+            for row in taifex_data:
+                if isinstance(row, dict) and row.get("ContractId") == "TX" and "外資" in row.get("Identity", ""):
+                    foreign_futures_oi = int(row.get("NetOpenInterest", 0))
+                    futures_oi_diff = int(row.get("NetOpenInterestChange", 0))
+                    break
+                    
+            if foreign_futures_oi == 0:
+                futures_error = f"查無對應資料，API 回傳內容前100字: {raw_text[:100]}"
+    except Exception as e:
+        futures_error = f"HTTP {getattr(e.response, 'status_code', '')} {str(e)[:40]}" if hasattr(e, 'response') else str(e)[:40]
+
+    # 籌碼評分
+    spot_score = 1 if foreign_spot > 50 else (-1 if foreign_spot < -50 else 0)
+    futures_score = 1 if foreign_futures_oi > 0 else (-1 if foreign_futures_oi < -20000 else 0)
+    
+    # 陳族元核心警訊
+    warning_flag = (foreign_spot > 20 and futures_oi_diff < -3000)
+
+    # 必須確保這裡有 return，evaluate_strategy 才能正確接收資料
+    return {
+        "spot": round(foreign_spot, 2),
+        "spot_score": spot_score,
+        "spot_error": spot_error,
+        "futures_oi": foreign_futures_oi,
+        "futures_diff": futures_oi_diff,
+        "futures_score": futures_score,
+        "futures_error": futures_error,
+        "warning": warning_flag
+    }
 
 def send_discord_notification(macro, chips, total_score, status, allocation, color):
     if not DISCORD_WEBHOOK_URL:
