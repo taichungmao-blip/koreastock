@@ -66,16 +66,10 @@ def get_institutional_data():
         
     # 2. 期交所三大法人台指期未平倉
     params_futures = {
-    "dataset": "TaiwanFuturesInstitutionalInvestors",
-    "data_id": "TX",
-    "start_date": "2026-06-15",  # 往前多抓半個月以利計算均線
-    "end_date": "2026-07-31"     # 設定回測的結束日期
+        "dataset": "TaiwanFuturesInstitutionalInvestors",
+        "data_id": "TX",
+        "start_date": (datetime.now() - pd.Timedelta(days=30)).strftime("%Y-%m-%d")
     }
-    #params_futures = {
-      #  "dataset": "TaiwanFuturesInstitutionalInvestors",
-       # "data_id": "TX",
-      #  "start_date": (datetime.now() - pd.Timedelta(days=30)).strftime("%Y-%m-%d")
-   # }
     foreign_futures_oi = 0
     futures_oi_diff = 0
     futures_ma5 = 0
@@ -135,8 +129,8 @@ def get_institutional_data():
         futures_score = 1    # 短線急補空單/佈多單
     elif oi_deviation < -5000:
         futures_score = -1   # 短線急殺建空單
-    elif (futures_ma10 - futures_ma5) > 1500:
-        futures_score = -1   # 緩跌：5MA實質跌破10MA超過3000口
+    elif (futures_ma10 - futures_ma5) > 2000:
+        futures_score = -1   # 緩跌：5MA實質跌破10MA超過2000口
     else:
         futures_score = 0    # 維持常態水位
 
