@@ -43,16 +43,10 @@ def get_institutional_data():
     finmind_url = "https://api.finmindtrade.com/api/v4/data"
     
     # 1. 證交所外資現貨買賣超
-    params_futures = {
-    "dataset": "TaiwanFuturesInstitutionalInvestors",
-    "data_id": "TX",
-    "start_date": "2026-06-15",  # 往前多抓半個月以利計算均線
-    "end_date": "2026-07-31"     # 設定回測的結束日期
+    params_spot = {
+        "dataset": "TaiwanStockTotalInstitutionalInvestors",
+        "start_date": (datetime.now() - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
     }
-    #params_spot = {
-     #   "dataset": "TaiwanStockTotalInstitutionalInvestors",
-      #  "start_date": (datetime.now() - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
-    #}
     foreign_spot = 0
     spot_error = ""
     try:
@@ -72,10 +66,16 @@ def get_institutional_data():
         
     # 2. 期交所三大法人台指期未平倉
     params_futures = {
-        "dataset": "TaiwanFuturesInstitutionalInvestors",
-        "data_id": "TX",
-        "start_date": (datetime.now() - pd.Timedelta(days=30)).strftime("%Y-%m-%d")
+    "dataset": "TaiwanFuturesInstitutionalInvestors",
+    "data_id": "TX",
+    "start_date": "2026-06-15",  # 往前多抓半個月以利計算均線
+    "end_date": "2026-07-31"     # 設定回測的結束日期
     }
+    #params_futures = {
+      #  "dataset": "TaiwanFuturesInstitutionalInvestors",
+       # "data_id": "TX",
+      #  "start_date": (datetime.now() - pd.Timedelta(days=30)).strftime("%Y-%m-%d")
+   # }
     foreign_futures_oi = 0
     futures_oi_diff = 0
     futures_ma5 = 0
