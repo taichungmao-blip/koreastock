@@ -67,7 +67,7 @@ def get_institutional_data():
     # 2. 期交所三大法人台指期未平倉
     params_futures = {
         "dataset": "TaiwanFuturesInstitutionalInvestors",
-        "data_id": "TX",  # 修正：補上 FinMind 期貨資料集必填的商品代碼 (TX = 台股期貨)
+        "data_id": "TX",  # API 已過濾台股期貨
         "start_date": (datetime.now() - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
     }
     foreign_futures_oi = 0
@@ -81,34 +81,36 @@ def get_institutional_data():
         if data_f.get("msg") == "success" and len(data_f.get("data", [])) > 0:
             df_f = pd.DataFrame(data_f["data"])
             
-            # 篩選 TX (台股期貨) 與 外資
-            tx_df = df_f[(df_f["item"].astype(str).str.contains("TX|臺股期貨|台股期貨", regex=True)) & 
-                         (df_f["name"].astype(str).str.contains("Foreign|外資", regex=True))]
-            
-            if not tx_df.empty:
-                dates = sorted(tx_df["date"].unique())
-                latest_data = tx_df[tx_df["date"] == dates[-1]]
+            # 【修正】拔除 item 篩選，因為資料已全部是 TX，只需過濾外資
+            if "name" in df_f.columns:
+                tx_df = df_f[df_f["name"].astype(str).str.contains("Foreign|外資", regex=True, na=False)]
                 
-                if not latest_data.empty:
-                    row = latest_data.iloc[0]
-                    # 容錯處理 FinMind 可能的兩種欄位命名法 (volume 或 qty)
-                    long_oi = int(row.get("long_oi_volume", row.get("long_oi_qty", 0)))
-                    short_oi = int(row.get("short_oi_volume", row.get("short_oi_qty", 0)))
-                    foreign_futures_oi = long_oi - short_oi
+                if not tx_df.empty:
+                    dates = sorted(tx_df["date"].unique())
+                    latest_data = tx_df[tx_df["date"] == dates[-1]]
                     
-                    if len(dates) >= 2:
-                        prev_data = tx_df[tx_df["date"] == dates[-2]]
-                        if not prev_data.empty:
-                            prev_row = prev_data.iloc[0]
-                            prev_long = int(prev_row.get("long_oi_volume", prev_row.get("long_oi_qty", 0)))
-                            prev_short = int(prev_row.get("short_oi_volume", prev_row.get("short_oi_qty", 0)))
-                            futures_oi_diff = foreign_futures_oi - (prev_long - prev_short)
+                    if not latest_data.empty:
+                        row = latest_data.iloc[0]
+                        long_oi = int(row.get("long_oi_volume", row.get("long_oi_qty", 0)))
+                        short_oi = int(row.get("short_oi_volume", row.get("short_oi_qty", 0)))
+                        foreign_futures_oi = long_oi - short_oi
+                        
+                        if len(dates) >= 2:
+                            prev_data = tx_df[tx_df["date"] == dates[-2]]
+                            if not prev_data.empty:
+                                prev_row = prev_data.iloc[0]
+                                prev_long = int(prev_row.get("long_oi_volume", prev_row.get("long_oi_qty", 0)))
+                                prev_short = int(prev_row.get("short_oi_volume", prev_row.get("short_oi_qty", 0)))
+                                futures_oi_diff = foreign_futures_oi - (prev_long - prev_short)
+                else:
+                    futures_error = "FinMind 篩選後無外資期貨資料"
             else:
-                futures_error = "FinMind 篩選後無 TX 或外資期貨資料"
+                futures_error = f"找不到 name 欄位，現有欄位: {list(df_f.columns)}"
         else:
             futures_error = "FinMind 期貨 API 回傳空陣列"
     except Exception as e:
-        futures_error = f"FinMind 期貨請求失敗: {str(e)[:40]}"
+        # 只取第一行的錯誤訊息，避免過長
+        futures_error = f"期貨請求失敗: {str(e).splitlines()[0][:40]}"
 
     spot_score = 1 if foreign_spot > 50 else (-1 if foreign_spot < -50 else 0)
     futures_score = 1 if foreign_futures_oi > 0 else (-1 if foreign_futures_oi < -20000 else 0)
@@ -124,7 +126,6 @@ def get_institutional_data():
         "futures_error": futures_error,
         "warning": warning_flag
     }
-
 def evaluate_strategy(macro, chips):
     total_score = (macro["dxy"]["score"] + macro["tnx"]["score"] + 
                    chips["spot_score"] + chips["futures_score"])
