@@ -39,7 +39,7 @@ def get_macro_indicators():
     return result
 
 def get_institutional_data():
-    """心法 2：獲取外資現貨買賣超與台指期淨未平倉口數 (導入 MA5、MA10 與防假跌破門檻)"""
+    """心法 2：獲取外資現貨買賣超與台指期淨未平倉口數 (現貨高容錯與期貨防跌破門檻)"""
     finmind_url = "https://api.finmindtrade.com/api/v4/data"
     
     # 1. 證交所外資現貨買賣超
@@ -122,7 +122,8 @@ def get_institutional_data():
         futures_error = f"期貨請求失敗: {str(e).splitlines()[0][:40]}"
 
     # 綜合評分：結合短線動能(乖離)與中線趨勢(實質死亡交叉)
-    spot_score = 1 if foreign_spot > 50 else (-1 if foreign_spot < -50 else 0)
+    # [修改點 1] 現貨評分門檻調高至 200 億
+    spot_score = 1 if foreign_spot > 200 else (-1 if foreign_spot < -200 else 0)
     
     oi_deviation = foreign_futures_oi - futures_ma5
     if oi_deviation > 5000:
@@ -134,7 +135,8 @@ def get_institutional_data():
     else:
         futures_score = 0    # 維持常態水位
 
-    warning_flag = (foreign_spot > 20 and futures_oi_diff < -3000)
+    # [修改點 2] 誘多背離的現貨門檻調高至 100 億
+    warning_flag = (foreign_spot > 100 and futures_oi_diff < -3000)
 
     return {
         "spot": round(foreign_spot, 2),
@@ -179,7 +181,8 @@ def send_discord_notification(macro, chips, total_score, status, allocation, col
 
     today = datetime.now().strftime("%Y-%m-%d")
     
-    spot_text = f"• 外資現貨買賣超：`{chips['spot']} 億元`"
+    # 增加顯示現貨評分，方便除錯與觀測
+    spot_text = f"• 外資現貨買賣超：`{chips['spot']} 億元` (現貨評分: {chips['spot_score']})"
     if chips.get('spot_error'):
         spot_text += f"\n  ⚠️ **抓取錯誤**: `{chips['spot_error']}`"
         
@@ -202,7 +205,7 @@ def send_discord_notification(macro, chips, total_score, status, allocation, col
                 "inline": False
             },
             {
-                "name": "🎯 心法 2：外資籌碼指標 (緩衝門檻修正版)",
+                "name": "🎯 心法 2：外資籌碼指標 (現貨高容錯修正版)",
                 "value": f"{spot_text}\n{futures_text}",
                 "inline": False
             }
@@ -213,7 +216,7 @@ def send_discord_notification(macro, chips, total_score, status, allocation, col
     if chips["warning"]:
         embed["fields"].append({
             "name": "🚨 關鍵轉折警示",
-            "value": "外資呈現「現貨買超、期貨顯著減碼」之背離結構，需嚴防大盤逢高變盤！",
+            "value": "外資呈現「現貨買超 100 億以上、期貨顯著減碼」之背離結構，需嚴防大盤逢高變盤！",
             "inline": False
         })
         
